@@ -16,8 +16,13 @@ mlartifacts/
 .idea/
 *.DS_Store
 
-# Model outputs & raw data
+# Project data & model artifacts (DO NOT version these)
+04-data/
+05-artifacts/
+
+# Legacy or temporary model directories (safety)
 models/
-01-raw/
 artifacts/
-data/
+
+# Environment variables & secrets
+.env
