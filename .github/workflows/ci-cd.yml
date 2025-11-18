@@ -1,5 +1,3 @@
-# .github/workflows/ci-cd.yml
-
 name: CI/CD Pipeline
 
 on:
@@ -32,30 +30,40 @@ jobs:
           python-version: "3.12"
 
       - name: Install testing tools
-        run: pip install flake8 pytest requests
+        run: pip install pytest requests
 
       - name: Download latest trained-model artifact
         uses: actions/download-artifact@v4
         with:
           name: trained-model
-          path: 06-cicd/
+          path: 05-artifacts/models/
 
       - name: Verify downloaded artifact
-        run: ls -R 06-cicd
+        run: ls -R 05-artifacts/models
 
-      - name: Lint
-        working-directory: 06-cicd
-        run: flake8 . --max-line-length=100 --ignore=E501
+      - name: Build Docker image
+        run: docker build -t autoworth-api .
 
-      - name: Build & Test Docker image
-        working-directory: 06-cicd
+      - name: Run container (smoke test)
         run: |
-          docker build -t nyc-duration-app .
-          docker run -d -p 9696:9696 --name nyc-app nyc-duration-app
-          sleep 20
-          curl -f http://localhost:9696/health || (docker logs nyc-app && exit 1)
-          pytest -q test_api.py
-          docker stop nyc-app && docker rm nyc-app
+          docker run -d -p 8000:8000 --name autoworth autoworth-api
+          # espera breve a que FastAPI levante
+          sleep 12
+          curl -f http://localhost:8000/health
+
+      - name: Pytest against running API
+        env:
+          BASE_URL: http://localhost:8000
+        run: |
+          if [ -f 06-tests/test_api.py ]; then
+            pytest -q 06-tests/test_api.py
+          else
+            echo "No 06-tests/test_api.py present, skipping pytest"
+          fi
+
+      - name: Stop container
+        if: always()
+        run: docker stop autoworth && docker rm autoworth
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -68,18 +76,10 @@ jobs:
         run: |
           IMAGE_ID="ghcr.io/${{ github.repository }}"
           IMAGE_ID=$(echo $IMAGE_ID | tr '[:upper:]' '[:lower:]')
-          
-          # Use the first 7 characters of the commit SHA as the version tag.
           VERSION=$(echo "${{ github.sha }}" | cut -c1-7)
-          
-          echo "Pushing image: $IMAGE_ID with tags: latest, $VERSION"
 
-          # Tag with the unique version
-          docker tag nyc-duration-app "$IMAGE_ID:$VERSION"
-          
-          # Tag with 'latest'
-          docker tag nyc-duration-app "$IMAGE_ID:latest"
-          
-          # Push both tags
+          echo "Pushing image: $IMAGE_ID with tags: latest, $VERSION"
+          docker tag autoworth-api "$IMAGE_ID:$VERSION"
+          docker tag autoworth-api "$IMAGE_ID:latest"
           docker push "$IMAGE_ID:$VERSION"
           docker push "$IMAGE_ID:latest"

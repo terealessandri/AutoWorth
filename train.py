@@ -67,6 +67,8 @@ if HAS_XGB:
         subsample=0.8, colsample_bytree=0.8, random_state=42, n_jobs=-1
     )
 
+# ... keep all your imports and helper functions ...
+
 results = []
 mlflow.set_experiment("AutoWorth-Training")
 
@@ -77,21 +79,36 @@ with mlflow.start_run(run_name="Baseline_Median"):
     mlflow.log_metric("rmse", baseline["rmse"])
     mlflow.log_metric("mape_pct", baseline["mape"])
     mlflow.log_metric("pct_within_eur_500", baseline["pct_within_€500"])
+    Path(ARTIFACT_DIR).mkdir(parents=True, exist_ok=True)
+    with open(os.path.join(ARTIFACT_DIR, "baseline_metrics.json"), "w") as f:
+        json.dump(baseline, f, indent=2)
+    mlflow.log_artifact(os.path.join(ARTIFACT_DIR, "baseline_metrics.json"))
+
+
+
+results = []
+mlflow.set_experiment("AutoWorth-Training")
+
+with mlflow.start_run(run_name="Baseline_Median"):
+    mlflow.log_param("model", "Baseline_Median")
+    mlflow.log_metric("r2", baseline["r2"])
+    mlflow.log_metric("mae", baseline["mae"])
+    mlflow.log_metric("rmse", baseline["rmse"])
+    mlflow.log_metric("mape_pct", baseline["mape"])
+    mlflow.log_metric("pct_within_eur_500", baseline["pct_within_€500"])
+    Path(ARTIFACT_DIR).mkdir(parents=True, exist_ok=True)
     with open(os.path.join(ARTIFACT_DIR, "baseline_metrics.json"), "w") as f:
         json.dump(baseline, f, indent=2)
     mlflow.log_artifact(os.path.join(ARTIFACT_DIR, "baseline_metrics.json"))
 
 for name, model in models.items():
     with mlflow.start_run(run_name=name):
-        # Only XGBoost requires numpy arrays (avoids columns names)
+        # Handle XGBoost separately
         if name.lower().startswith("xgboost") or "xgb" in name.lower():
-            X_fit = X_tr.to_numpy()
-            X_val_in = X_val.to_numpy()
+            X_fit, X_val_in = X_tr.to_numpy(), X_val.to_numpy()
         else:
-            X_fit = X_tr
-            X_val_in = X_val
+            X_fit, X_val_in = X_tr, X_val
 
-        # Train and evaluate
         t0 = time.time()
         model.fit(X_fit, y_tr)
         train_time_s = time.time() - t0
@@ -100,61 +117,77 @@ for name, model in models.items():
         preds = model.predict(X_val_in)
         infer_time_s = time.time() - t0
 
-        r2 = r2_score(y_val, preds)
-        mae = mean_absolute_error(y_val, preds)
-        _rmse = rmse(y_val, preds)
-        _mape = mape(y_val, preds)
+        # Compute metrics
+        r2     = r2_score(y_val, preds)
+        mae    = mean_absolute_error(y_val, preds)
+        _rmse  = rmse(y_val, preds)
+        _mape  = mape(y_val, preds)
         within = pct_within_tol(y_val, preds, TOL_EUR)
 
-        mlflow.log_param("model", name)
-        mlflow.log_param("target", TARGET)
-        mlflow.log_param("tolerance_eur", TOL_EUR)
+        # Log to MLflow (metrics only)
+        mlflow.log_params({
+            "model": name,
+            "target": TARGET,
+            "tolerance_eur": TOL_EUR
+        })
+        mlflow.log_metrics({
+            "r2": r2,
+            "mae": mae,
+            "rmse": _rmse,
+            "mape_pct": _mape,
+            "pct_within_eur_500": within,
+            "train_time_s": train_time_s,
+            "infer_batch_time_s": infer_time_s
+        })
 
-        mlflow.log_metric("r2", r2)
-        mlflow.log_metric("mae", mae)
-        mlflow.log_metric("rmse", _rmse)
-        mlflow.log_metric("mape_pct", _mape)
-        mlflow.log_metric("pct_within_eur_500", within)
-        mlflow.log_metric("train_time_s", train_time_s)
-        mlflow.log_metric("infer_batch_time_s", infer_time_s)
+        # Store in results for selection
+        results.append({
+            "name": name,
+            "mae": mae,
+            "r2": r2,
+            "rmse": _rmse,
+            "mape": _mape,
+            "pct_within_eur_500": within,
+            "estimator": model
+        })
 
-        out_path = os.path.join(ARTIFACT_DIR, f"{name}_model.joblib")
-        joblib.dump(model, out_path)
-        mlflow.sklearn.log_model(model, artifact_path="model")
 
-    results.append({"name": name, "mae": mae, "r2": r2, "rmse": _rmse, "mape": _mape, "pct_within_eur_500": within, "path": out_path})
-
-# selection by lowest MAE
+# Choose the lowest MAE
 best = sorted(results, key=lambda d: d["mae"])[0]
-with open(os.path.join(ARTIFACT_DIR, "summary.json"), "w") as f:
-    json.dump({"baseline": baseline, "candidates": results, "best": best}, f, indent=2)
 
-
-print(f"Best: {best['name']} | MAE={best['mae']:.2f} | RMSE={best['rmse']:.2f} | R2={best['r2']:.4f} | MAPE={best['mape']:.2f}% | within_eur_500={best['pct_within_eur_500']:.1f}%")
-print(f"Saved: {best['path']}")
-
-# === save canonical copy of the best model ===
-BEST_MODEL_CANON = Path(ARTIFACT_DIR) / "best_model.joblib"
+# Save ONLY the best model locally
 Path(ARTIFACT_DIR).mkdir(parents=True, exist_ok=True)
+best_path = os.path.join(ARTIFACT_DIR, f"{best['name']}_model.joblib")
+joblib.dump(best["estimator"], best_path)
 
-from shutil import copy2
-copy2(best["path"], BEST_MODEL_CANON)
-
-# optional: keep a timestamped copy locally (not required to push)
-ts = time.strftime("%Y%m%d-%H%M%S")
-copy2(best["path"], Path(ARTIFACT_DIR) / f"{ts}_{best['name']}.joblib")
-
-# lightweight metadata for the API
-meta = {
-    "model_name": best["name"],
-    "mae": best["mae"],
-    "rmse": best["rmse"],
-    "r2": best["r2"],
-    "mape": best.get("mape"),
-    "pct_within_eur_500": best.get("pct_within_eur_500"),
-    "source_path": best["path"],
-    "created_at": ts,
+# Write summary
+summary = {
+    "baseline": baseline,
+    "candidates": [
+        {k: v for k, v in d.items() if k != "estimator"} for d in results
+    ],
+    "best": {
+        "name": best["name"],
+        "mae": best["mae"],
+        "rmse": best["rmse"],
+        "r2": best["r2"],
+        "mape": best["mape"],
+        "pct_within_eur_500": best["pct_within_eur_500"],
+        "path": best_path
+    }
 }
-(Path(ARTIFACT_DIR) / "model_meta.json").write_text(json.dumps(meta, indent=2))
-print(f"✅ Best model copied to {BEST_MODEL_CANON}")
 
+with open(os.path.join(ARTIFACT_DIR, "summary.json"), "w") as f:
+    json.dump(summary, f, indent=2)
+
+# Print clear summary
+print("\n================== TRAINING SUMMARY ==================")
+for r in results:
+    print(f"{r['name']:<20} MAE={r['mae']:.2f} | RMSE={r['rmse']:.2f} | "
+          f"R2={r['r2']:.3f} | MAPE={r['mape']:.2f}% | "
+          f"Within±€500={r['pct_within_eur_500']:.1f}%")
+
+print("------------------------------------------------------")
+print(f"BEST MODEL: {best['name']}")
+print(f"Saved to:   {best_path}")
+print("======================================================\n")

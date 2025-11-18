@@ -1,20 +1,20 @@
+# -------- Base image --------
 FROM python:3.12-slim
 
-RUN apt-get update -qq && apt-get install -y -qq unzip && rm -rf /var/lib/apt/lists/*
+# Optional: nicer logs & no .pyc files
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Copy and install dependencies
+# -------- Install deps --------
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code and pre-downloaded model (from workflow)
+# -------- Copy code + model artifacts --------
+# (CI workflow downloads 05-artifacts/models/ before build; locally you already have them)
 COPY . .
 
-# Unzip model if artifact uploaded it as a zip
-RUN if [ -f models/model.zip ]; then \
-      unzip -o models/model.zip -d models/ && rm models/model.zip; \
-    fi && echo "Model ready in /app/models"
-
-EXPOSE 9696
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "9696"]
+# -------- Expose & run --------
+EXPOSE 8000
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]

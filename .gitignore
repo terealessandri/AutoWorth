@@ -17,15 +17,13 @@ backend.db
 .idea/
 *.DS_Store
 
-# Project data & model artifacts (DO NOT version these)
+# --- Project data & artifacts (NO versionar) ---
 04-data/
 05-artifacts/
 
-# Allow ONLY the final model and metadata inside 05-artifacts/models
-!05-artifacts/models/
-05-artifacts/models/*
-!05-artifacts/models/best_model.joblib
-!05-artifacts/models/model_meta.json
+# Allows placeholders (if you use them)
+!04-data/**/.gitkeep
+!05-artifacts/**/.gitkeep
 
 # Legacy or temporary model directories (safety)
 models/
