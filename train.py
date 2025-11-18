@@ -129,5 +129,32 @@ best = sorted(results, key=lambda d: d["mae"])[0]
 with open(os.path.join(ARTIFACT_DIR, "summary.json"), "w") as f:
     json.dump({"baseline": baseline, "candidates": results, "best": best}, f, indent=2)
 
-print(f"Best: {best['name']} | MAE={best['mae']:.2f} | RMSE={best['rmse']:.2f} | R2={best['r2']:.4f} | MAPE={best['mape']:.2f}% | within_eur_500={best['pct_within_€500']:.1f}%")
+
+print(f"Best: {best['name']} | MAE={best['mae']:.2f} | RMSE={best['rmse']:.2f} | R2={best['r2']:.4f} | MAPE={best['mape']:.2f}% | within_eur_500={best['pct_within_eur_500']:.1f}%")
 print(f"Saved: {best['path']}")
+
+# === save canonical copy of the best model ===
+BEST_MODEL_CANON = Path(ARTIFACT_DIR) / "best_model.joblib"
+Path(ARTIFACT_DIR).mkdir(parents=True, exist_ok=True)
+
+from shutil import copy2
+copy2(best["path"], BEST_MODEL_CANON)
+
+# optional: keep a timestamped copy locally (not required to push)
+ts = time.strftime("%Y%m%d-%H%M%S")
+copy2(best["path"], Path(ARTIFACT_DIR) / f"{ts}_{best['name']}.joblib")
+
+# lightweight metadata for the API
+meta = {
+    "model_name": best["name"],
+    "mae": best["mae"],
+    "rmse": best["rmse"],
+    "r2": best["r2"],
+    "mape": best.get("mape"),
+    "pct_within_eur_500": best.get("pct_within_eur_500"),
+    "source_path": best["path"],
+    "created_at": ts,
+}
+(Path(ARTIFACT_DIR) / "model_meta.json").write_text(json.dumps(meta, indent=2))
+print(f"✅ Best model copied to {BEST_MODEL_CANON}")
+

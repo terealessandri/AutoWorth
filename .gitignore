@@ -10,6 +10,7 @@ __pycache__/
 mlflow.db
 mlruns/
 mlartifacts/
+backend.db
 
 # IDE / OS specific
 .vscode/
@@ -19,6 +20,12 @@ mlartifacts/
 # Project data & model artifacts (DO NOT version these)
 04-data/
 05-artifacts/
+
+# Allow ONLY the final model and metadata inside 05-artifacts/models
+!05-artifacts/models/
+05-artifacts/models/*
+!05-artifacts/models/best_model.joblib
+!05-artifacts/models/model_meta.json
 
 # Legacy or temporary model directories (safety)
 models/
