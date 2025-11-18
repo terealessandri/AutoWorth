@@ -1,41 +1,48 @@
-name: Train
+name: Manual Train
 
 on:
-  workflow_call:
+  workflow_dispatch:
+    inputs:
+      use_mlflow:
+        description: "Set to 1 to enable MLflow"
+        required: true
+        default: "0"
 
 jobs:
   train:
     runs-on: ubuntu-latest
-
+    env:
+      PYTHONUNBUFFERED: "1"
+      USE_MLFLOW: "${{ github.event.inputs.use_mlflow }}"
+      MLFLOW_TRACKING_URI: "file:./mlruns"
+      MLFLOW_EXPERIMENT: "AutoWorth-Training"
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
-        run: pip install --no-cache-dir -r requirements.txt
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
-      - name: Train model
-        # 🧠 Usa MLflow en modo file-store (sin servidor)
-        env:
-          MLFLOW_TRACKING_URI: file:./mlruns
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Train
         run: python train.py
 
-      - name: Verify artifact contents
-        run: |
-          echo "==== Contents of 05-artifacts/models/ ===="
-          ls -R 05-artifacts/models || true
-          echo "==== summary.json preview ===="
-          cat 05-artifacts/models/summary.json || true
-
-      - name: Upload trained model
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: trained-model
           path: |
-            05-artifacts/models/
-          retention-days: 7
+            05-artifacts/models/*.joblib
+            05-artifacts/models/summary.json
+          if-no-files-found: error

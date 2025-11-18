@@ -1,33 +1,45 @@
-# Python virtual environment
+# Local enviroments
 .venv/
+.env
+env/
 venv/
 
 # Python cache
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.python-version
 
-# Local MLflow database (should not be in version control)
-mlflow.db
+# MLflow / tracking / db
 mlruns/
 mlartifacts/
+mlflow.db
 backend.db
+*.db
 
 # IDE / OS specific
 .vscode/
 .idea/
-*.DS_Store
+.DS_Store
+Thumbs.db
 
-# --- Project data & artifacts (NO versionar) ---
+# Big project data & artifacts
 04-data/
 05-artifacts/
+models/
+artifacts/
+outputs/
+checkpoints/
 
 # Allows placeholders (if you use them)
 !04-data/**/.gitkeep
 !05-artifacts/**/.gitkeep
 
-# Legacy or temporary model directories (safety)
-models/
-artifacts/
+# Temporal files
+*.log
+*.tmp
+*.bak
 
-# Environment variables & secrets
-.env
+
