@@ -1,115 +1,133 @@
-"""Train NYC Taxi Duration model and package for deployment."""
+# train.py
+import os, json, time
+import numpy as np
+import pandas as pd
+import joblib
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
+try:
+    from xgboost import XGBRegressor
+    HAS_XGB = True
+except Exception:
+    HAS_XGB = False
 
-from __future__ import annotations
+import mlflow, mlflow.sklearn
+mlflow.set_tracking_uri("http://127.0.0.1:5000")
+mlflow.set_experiment("AutoWorth-Training")
+
+DATA_PATH = "04-data/processed/cars_clean.csv"
+TARGET = "price"
+ARTIFACT_DIR = "05-artifacts/models"
+TOL_EUR = 500
 
 from pathlib import Path
-import shutil
+Path(ARTIFACT_DIR).mkdir(parents=True, exist_ok=True)
 
-import mlflow
-import mlflow.sklearn
-import pandas as pd
-import xgboost as xgb
-from sklearn.feature_extraction import DictVectorizer
-from sklearn.metrics import mean_absolute_error, r2_score
-from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline
+def rmse(y_true, y_pred):
+    return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
 
+def mape(y_true, y_pred):
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+    mask = y_true != 0
+    return float(np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100.0)
 
-DATA_URL = (
-    "https://d37ci6vzurychx.cloudfront.net/trip-data/"
-    "yellow_tripdata_2023-01.parquet"
-)
-DEPLOYMENT_MODEL_PATH = Path("models/model")
+def pct_within_tol(y_true, y_pred, tol=TOL_EUR):
+    return float(np.mean(np.abs(y_true - y_pred) <= tol) * 100.0)
 
+os.makedirs(ARTIFACT_DIR, exist_ok=True)
 
-def load_data(limit: int = 100_000) -> pd.DataFrame:
-    """Load and filter NYC taxi data."""
-    print("Loading data...")
-    df = pd.read_parquet(DATA_URL)
-    df["duration"] = (
-        df["tpep_dropoff_datetime"] - df["tpep_pickup_datetime"]
-    ).dt.total_seconds() / 60
-    df = df[(df["duration"] >= 1) & (df["duration"] <= 60)]
-    df = df[(df["trip_distance"] > 0) & (df["trip_distance"] < 100)]
-    df = df.head(limit).copy()
-    print(f"Loaded {len(df):,} rows")
-    return df
+df = pd.read_csv(DATA_PATH)
+X = df.drop(columns=[TARGET])
+y = df[TARGET]
 
+X_tr, X_val, y_tr, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
-def prepare_features(df: pd.DataFrame):
-    """Create feature dicts and target."""
-    df["PU_DO"] = df["PULocationID"].astype(str) + "_" + df["DOLocationID"].astype(str)
-    features = df[["PU_DO", "trip_distance"]].to_dict(orient="records")
-    target = df["duration"].values
-    return features, target
+baseline_pred = np.full_like(y_val, fill_value=float(np.median(y_tr)), dtype=float)
+baseline = {
+    "name": "Baseline_Median",
+    "r2": r2_score(y_val, baseline_pred),
+    "mae": mean_absolute_error(y_val, baseline_pred),
+    "rmse": rmse(y_val, baseline_pred),
+    "mape": mape(y_val, baseline_pred),
+    "pct_within_€500": pct_within_tol(y_val, baseline_pred),
+}
 
-
-def train_and_log(X_train, y_train, X_val, y_val):
-    """Train model, log to MLflow, and copy artifact for deployment."""
-    print("Training model...")
-    mlflow.set_experiment("nyc-taxi-duration")
-
-    pipeline = Pipeline(
-        [
-            ("vectorizer", DictVectorizer(sparse=True)),
-            (
-                "regressor",
-                xgb.XGBRegressor(
-                    objective="reg:squarederror",
-                    max_depth=8,
-                    learning_rate=0.1,
-                    n_estimators=200,
-                    subsample=0.8,
-                    colsample_bytree=0.8,
-                    random_state=42,
-                ),
-            ),
-        ]
+models = {
+    "LinearRegression": LinearRegression(),
+    "RandomForest": RandomForestRegressor(
+        n_estimators=400, n_jobs=-1, random_state=42
+    ),
+}
+if HAS_XGB:
+    models["XGBoost"] = XGBRegressor(
+        n_estimators=800, learning_rate=0.05, max_depth=8,
+        subsample=0.8, colsample_bytree=0.8, random_state=42, n_jobs=-1
     )
 
-    with mlflow.start_run() as run:
-        pipeline.fit(X_train, y_train)
-        y_pred = pipeline.predict(X_val)
+results = []
+mlflow.set_experiment("AutoWorth-Training")
 
-        rmse = ((y_val - y_pred) ** 2).mean() ** 0.5
-        mae = mean_absolute_error(y_val, y_pred)
-        r2 = r2_score(y_val, y_pred)
+with mlflow.start_run(run_name="Baseline_Median"):
+    mlflow.log_param("model", "Baseline_Median")
+    mlflow.log_metric("r2", baseline["r2"])
+    mlflow.log_metric("mae", baseline["mae"])
+    mlflow.log_metric("rmse", baseline["rmse"])
+    mlflow.log_metric("mape_pct", baseline["mape"])
+    mlflow.log_metric("pct_within_eur_500", baseline["pct_within_€500"])
+    with open(os.path.join(ARTIFACT_DIR, "baseline_metrics.json"), "w") as f:
+        json.dump(baseline, f, indent=2)
+    mlflow.log_artifact(os.path.join(ARTIFACT_DIR, "baseline_metrics.json"))
 
-        mlflow.log_metric("rmse", rmse)
-        mlflow.log_metric("mae", mae)
+for name, model in models.items():
+    with mlflow.start_run(run_name=name):
+        # Only XGBoost requires numpy arrays (avoids columns names)
+        if name.lower().startswith("xgboost") or "xgb" in name.lower():
+            X_fit = X_tr.to_numpy()
+            X_val_in = X_val.to_numpy()
+        else:
+            X_fit = X_tr
+            X_val_in = X_val
+
+        # Train and evaluate
+        t0 = time.time()
+        model.fit(X_fit, y_tr)
+        train_time_s = time.time() - t0
+
+        t0 = time.time()
+        preds = model.predict(X_val_in)
+        infer_time_s = time.time() - t0
+
+        r2 = r2_score(y_val, preds)
+        mae = mean_absolute_error(y_val, preds)
+        _rmse = rmse(y_val, preds)
+        _mape = mape(y_val, preds)
+        within = pct_within_tol(y_val, preds, TOL_EUR)
+
+        mlflow.log_param("model", name)
+        mlflow.log_param("target", TARGET)
+        mlflow.log_param("tolerance_eur", TOL_EUR)
+
         mlflow.log_metric("r2", r2)
-        mlflow.sklearn.log_model(pipeline, "model")
+        mlflow.log_metric("mae", mae)
+        mlflow.log_metric("rmse", _rmse)
+        mlflow.log_metric("mape_pct", _mape)
+        mlflow.log_metric("pct_within_eur_500", within)
+        mlflow.log_metric("train_time_s", train_time_s)
+        mlflow.log_metric("infer_batch_time_s", infer_time_s)
 
-        run_id = run.info.run_id
-        print(f"Run ID: {run_id}")
-        print(f"Artifact URI: {mlflow.get_artifact_uri()}")
+        out_path = os.path.join(ARTIFACT_DIR, f"{name}_model.joblib")
+        joblib.dump(model, out_path)
+        mlflow.sklearn.log_model(model, artifact_path="model")
 
-    # Save the trained pipeline directly to the deployment path
-    print("Creating deployment-ready model...")
-    if DEPLOYMENT_MODEL_PATH.exists():
-        print(f"Removing existing model at {DEPLOYMENT_MODEL_PATH}")
-        shutil.rmtree(DEPLOYMENT_MODEL_PATH)
+    results.append({"name": name, "mae": mae, "r2": r2, "rmse": _rmse, "mape": _mape, "pct_within_eur_500": within, "path": out_path})
 
-    mlflow.sklearn.save_model(pipeline, str(DEPLOYMENT_MODEL_PATH))
-    print(f"Model saved to standard deployment path: {DEPLOYMENT_MODEL_PATH}")
+# selection by lowest MAE
+best = sorted(results, key=lambda d: d["mae"])[0]
+with open(os.path.join(ARTIFACT_DIR, "summary.json"), "w") as f:
+    json.dump({"baseline": baseline, "candidates": results, "best": best}, f, indent=2)
 
-    # Save run_id for the artifact
-    with open("run_id.txt", "w") as f:
-        f.write(run_id)
-
-    return run_id
-
-
-def main() -> None:
-    """Main training pipeline."""
-    df = load_data()
-    X, y = prepare_features(df)
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
-    train_and_log(X_train, y_train, X_val, y_val)
-    print("Training complete.")
-
-
-if __name__ == "__main__":
-    main()
+print(f"Best: {best['name']} | MAE={best['mae']:.2f} | RMSE={best['rmse']:.2f} | R2={best['r2']:.4f} | MAPE={best['mape']:.2f}% | within_eur_500={best['pct_within_€500']:.1f}%")
+print(f"Saved: {best['path']}")
