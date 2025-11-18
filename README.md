@@ -1,162 +1,104 @@
+AutoWorth — Documentation
+
+Predicting used-car prices with a production-grade ML system. This repo captures what we built, how the system works, and the decisions we made across data, modeling, serving, and operations.
+
+------------------------------------------------------------
+1) Overview
+------------------------------------------------------------
+AutoWorth is an end-to-end MLOps project that turns raw vehicle listings into price estimates via a reproducible pipeline and an online inference API. The system follows the whole loop (data → model → deploy → monitor)
+
+Key outcomes:
+- Single, versioned model artifact promoted to serving.
+- Deterministic preprocessing consistent between train and inference.
+- Experiment lineage captured (params, metrics, artifacts, run IDs).
+- Portable service boundary with a stable REST contract.
+
+------------------------------------------------------------
+2) High-level architecture
+------------------------------------------------------------
+        Data sources                Training & Tracking               Packaging & Serving               Clients / Tests
+  ----------------------------------------------------------------------------------------------
+  • Listings (tabular CSV)    • Feature pipeline (identical)      • FastAPI app (HTTP /predict)     • Swagger UI (/docs)
+                              • Model selection                    • Run ID surfaced via /health     • pytest integration tests
+                              • MLflow runs & artifacts           • Docker image as deploy unit      • cURL / Postman
+                                  (Reproducible, traced)               (Portable, reproducible)          (External, black-box)
+
+------------------------------------------------------------
+3) Data & features
+------------------------------------------------------------
+Input domain:
+Used-car listings with standard attributes (brand, model/trim, year, mileage, fuel, transmission, engine specs, location, etc.). After exploratory analysis, we removed unhelpful “other” buckets (fuel/transmission) and consolidated rare categories to avoid leakage from spurious frequency noise. Outliers were handled via IQR clipping for most numerics, with a domain rule for year based on market context. Missingness was addressed with simple, fast imputers consistent at train and serve time.
+
+Feature engineering:
+- Categorical variables → one-hot with UNKNOWN bucket to avoid injecting fake order and to handle unseen categories safely.
+- Numeric variables → winsorized/clipped as per data profile; optional scaling where model-class benefits.
+- Optional derived signals (e.g., mileage bands, age of vehicle, fuel x city interactions) were evaluated but only retained when they moved the validation metric meaningfully.
+
+------------------------------------------------------------
+4) Modeling & experiment tracking
+------------------------------------------------------------
+Task: Supervised regression (price)
+Baselines: Linear models and tree ensembles to establish a usefulness floor.
+Candidates: Regularized linear, Random Forest, Gradient Boosting/XGBoost.
+Metrics: MAE and RMSE as primary; R² as auxiliary for interpretability.
+
+Experiment management (MLflow):
+- Every run logs: parameters, data hash/split seed, metrics, feature list, and the trained model.
+- The chosen run’s Run ID is persisted (run_id.txt) and the model artifact exported (models/model.joblib) for serving.
+- The split between backend store (metadata) and artifact store follows MLflow best practices.
+
+------------------------------------------------------------
+5) Service design (FastAPI)
+------------------------------------------------------------
+Endpoints:
+- GET /health → returns {"status": "ok", "run_id": "<mlflow-run-id>"} for provenance checks.
+- POST /predict → accepts feature JSON, applies the same preprocessing as training, returns {"run_id": "...", "prediction": <float>}.
+
+Contract:
+- Stable schema for inputs/outputs; breaking changes require new versioned routes.
+- Swagger UI exposed at /docs for easy testing.
+
+Why HTTP online prediction:
+User-facing scenario → synchronous, per-request inference. Batch unsuitable; streaming unnecessary.
+
+------------------------------------------------------------
+6) Packaging & runtime
+------------------------------------------------------------
+Container:
+The app is packaged as a Docker image to ensure reproducibility and portability. It includes code, environment, and model artifact.
+
+Image contents:
+- app.py + preprocessing + model.joblib
+- Minimal base image, non-root user, explicit port exposure
+- Health endpoint for orchestration readiness
+
+------------------------------------------------------------
+7) Ops notes & future work
+------------------------------------------------------------
+- Monitoring: expand beyond /health; add drift and performance tracking.
+- Retraining: event/schedule-based with validation gates.
+- Traffic: introduce canary, A/B, or shadow rollouts.
+- Explainability: lightweight SHAP or feature-importance for transparency.
+- Security: input validation, rate limiting, no secrets in image.
+
+------------------------------------------------------------
+8) Repository layout
+------------------------------------------------------------
+AutoWorth/
+├─ data/
+├─ notebooks/
+├─ src/
+│  ├─ train.py
+│  ├─ app.py
+│  ├─ test_api.py
+│  └─ utils/
+├─ models/
+│  ├─ model.joblib
+│  └─ feature_columns.json
+├─ run_id.txt
+├─ requirements.txt
+├─ Dockerfile
+└─ README.md
 
 
-# MLOps NYC Taxis: Hands-On Roadmap
 
-This guide outlines a step-by-step, practical roadmap for building, tracking, and deploying a machine learning pipeline for NYC taxi trip duration prediction. Each step includes a clear goal, what to do, and what "done" looks like.
-
----
-
-## Prerequisites
-
-Before you begin, ensure you have the following tools installed and configured on your system.
-
-*   **Python (3.10 or newer):** The core programming language for the project.
-    *   **To Install:** Download from [python.org](https://www.python.org/downloads/).
-    *   **To Verify:** Open a terminal and run `python --version`.
-
-*   **Git:** The version control system used to manage the project's source code.
-    *   **To Install:** Download from [git-scm.com](https://git-scm.com/downloads).
-    *   **To Verify:** Run `git --version`.
-
-*   **Docker Desktop:** This project uses Docker to containerize the model serving application (Step 4) and to easily run services like MLflow and Airflow locally.
-    *   **To Install:** Download from [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop).
-    *   **To Verify:** Run `docker --version`.
-
-*   **(Recommended) A Modern Code Editor:** We recommend using an editor with good Python support.
-    *   **Example:** [Visual Studio Code](https://code.visualstudio.com/) with the official [Python extension](https://marketplace.visualstudio.com/items?itemName=ms-python.python).
-
----
-
-## 0. Environment & Packaging (applies to all steps)
-
-
-**Goal:** Deterministic local runs and easy hand-off.
-
-**Do:**
-- Create a single virtual environment at the repo root.
-- Use `requirements.txt` to manage dependencies.
-- Ensure all code runs consistently across environments.
-
-**How to set up:**
-1. Create a virtual environment:  
-    `python -m venv .venv`
-2. Activate the environment:  
-    - **Windows:** `.\.venv\Scripts\activate`
-    - **macOS/Linux:** `source .venv/bin/activate`
-3. Install dependencies:  
-    `pip install -r requirements.txt`
-4. Check install:  
-    `python -c "import pandas,sklearn"`
-
-**Deliverable:**
-- `pip install -r requirements.txt` works and installs all dependencies.
-- `python -c "import pandas,sklearn"` runs without error.
-
----
-
-## 1. Initial Notebook (Baseline)
-
-**Goal:** A repeatable, fully understood baseline.
-
-**Do:**
-- Build a single notebook that:
-    - Loads data
-    - Creates a duration feature
-    - Filters outliers
-    - Applies one-hot encoding (DictVectorizer)
-    - Trains a LinearRegression model
-    - Splits train/val by month
-    - Computes RMSE and overlays histograms
-
-**Deliverable:**
-- Notebook runs top-to-bottom without hidden state.
-- Prints train/val RMSE and shows a side-by-side histogram.
-
----
-
-## 2. Data Sampling for Iteration
-
-**Goal:** Fast iteration on laptops.
-
-**Do:**
-- Add a single source of truth for config (CLI args or `config.yaml`).
-- Add toggles: `--sample-frac`, `--months 2024-01,2024-02`, `--categoricals PULocationID,DOLocationID`.
-- Keep preprocessing logic unchanged.
-
-**Deliverable:**
-- Running with `--sample-frac 0.1` is ~10× faster and produces the same pipeline/metrics fields.
-
----
-
-## 3. Experiment Tracking (MLflow)
-
-**Goal:** Compare runs, not screenshots.
-
-**Do:**
-- Log parameters (features, filters, months), metrics (train/val RMSE), and artifacts (vectorizer, model) with MLflow.
-- Start from the notebook or a minimal `train.py` script.
-
-**Deliverable:**
-- MLflow UI shows multiple runs with clear names and comparable metrics.
-
----
-
-## 4. Model Serving
-
-**Goal:** An API that predicts trip duration from JSON input.
-
-**Do:**
-- Use FastAPI with a Pydantic schema.
-- Load `model.bin` and `dv.bin`.
-- Implement `/predict` endpoint returning duration.
-- Containerize with a Dockerfile.
-
-**Deliverable:**
-- `curl` or Postman returns a prediction.
-- `docker run ...` works locally.
-
----
-
-
-## 5. Monitoring & Drift Detection
-
-**Goal:** Observe the system after "go live".
-
-**Do:**
-- Capture input features and predictions.
-- Use a batch job with Evidently to generate monitoring reports.
-- Produce a small HTML report.
-
-**Deliverable:**
-- One HTML drift report for a day/week of traffic generated by Evidently.
-
----
-
-## 6. CI/CD (GitHub Actions + GHCR + Render)
-
-**Goal:** Automated training, testing, and image-based deployment with manual refresh on Render.
-
-**Do:**
-- `train.yml`: A reusable workflow that trains the model and saves it to `models/model/` (called by `ci-cd.yml`).
-- `ci-cd.yml`: The main orchestrator that calls training → lints & tests code → builds Docker image with the model baked in → pushes to GitHub Container Registry (`ghcr.io/<owner>/<repo>:latest` + commit SHA tag).
-- Create a Render web service from the existing GHCR image (not from source). Manual deploy to pull updates.
-
-**Deliverable:**
-- Green CI pipeline on every push.
-- Docker image published to GHCR with `:latest` and commit tags.
-- Live service on Render pulling the validated image.
-
----
-
----
-
-
-## Tips & Best Practices
-
-- **Single venv at repo root:** Use one environment for the whole project. Each module (01-initial-notebook, 02-data-sampling-features, etc.) contains its own notebooks and scripts.
-- **When to switch notebook → script?**
-    - For teaching: stay in the notebook through Step 2.
-    - For tracking/serving: introduce a minimal `train.py` script by Step 3 (can be called from the notebook with `!python train.py ...` or run directly).
-- **Config, not constants:** Move magic strings (months, filters, feature names) to CLI/`config.yaml` by Step 2.
-- **Data contract early:** Add a Pydantic model for `/predict` input in Step 4 and reuse the same fields in training to avoid train/serve skew.
-- **Artifacts:** Start saving `dv` and `model` in Step 3 to support serving (not needed in Step 1).
