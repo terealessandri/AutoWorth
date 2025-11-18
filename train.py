@@ -10,8 +10,7 @@ from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor
 
-# --- MLflow helper (no-op si USE_MLFLOW=0 o si no está instalado) ---
-# Permite importar utils desde 02-src (namespace package)
+# --- permitir importar el helper desde 02-src ---
 sys.path.append("02-src")
 from utils.safe_mlflow import (  # noqa: E402
     start_run, set_tracking_uri, set_experiment,
@@ -31,17 +30,14 @@ TARGET = "price"
 ARTIFACT_DIR = "05-artifacts/models"
 TOL_EUR = 500
 
-# Si activas MLflow: export USE_MLFLOW=1
-# Puedes cambiar la URI por HTTP (server) o 'file:./mlruns'
 USE_MLFLOW = os.getenv("USE_MLFLOW", "0").lower() in ("1", "true")
-
 if USE_MLFLOW:
     set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "file:./mlruns"))
     set_experiment(os.getenv("MLFLOW_EXPERIMENT", "AutoWorth-Training"))
 
 Path(ARTIFACT_DIR).mkdir(parents=True, exist_ok=True)
 
-# ===================== Métricas auxiliares =====================
+# ===================== Helpers métricas =====================
 def rmse(y_true, y_pred):
     return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
 
@@ -54,8 +50,21 @@ def mape(y_true, y_pred):
 def pct_within_tol(y_true, y_pred, tol=TOL_EUR):
     return float(np.mean(np.abs(y_true - y_pred) <= tol) * 100.0)
 
-# ===================== Carga de datos =====================
+# ===================== Datos =====================
+# Si el CSV real no existe (p.ej., en GitHub Actions), crear un dataset mínimo de prueba
+if not Path(DATA_PATH).exists():
+    print(f"[INFO] '{DATA_PATH}' not found — creating mock dataset for CI run.")
+    Path("04-data/processed").mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({
+        "year": [2015, 2018, 2020, 2017, 2019],
+        "mileage": [80000, 45000, 20000, 60000, 35000],
+        "engine_size": [1.6, 2.0, 1.2, 1.4, 1.0],
+        "price": [8000, 15000, 20000, 11000, 14000],
+    }).to_csv(DATA_PATH, index=False)
+
 df = pd.read_csv(DATA_PATH)
+
+# asegurar que no trae columnas objetivo duplicadas o no numéricas en X
 X = df.drop(columns=[TARGET])
 y = df[TARGET]
 
@@ -72,7 +81,6 @@ baseline = {
     "pct_within_€500": pct_within_tol(y_val, baseline_pred),
 }
 
-# Logueo baseline (no-op si MLflow desactivado)
 with start_run(run_name="Baseline_Median"):
     log_params({"model": "Baseline_Median"})
     log_metrics({
@@ -82,14 +90,12 @@ with start_run(run_name="Baseline_Median"):
         "mape_pct": baseline["mape"],
         "pct_within_eur_500": baseline["pct_within_€500"],
     })
-    # Guardar y (si aplica) loggear artifact con métricas baseline
-    Path(ARTIFACT_DIR).mkdir(parents=True, exist_ok=True)
     baseline_path = os.path.join(ARTIFACT_DIR, "baseline_metrics.json")
     with open(baseline_path, "w") as f:
         json.dump(baseline, f, indent=2)
     log_artifact(baseline_path)
 
-# ===================== Modelos candidatos =====================
+# ===================== Modelos =====================
 models = {
     "LinearRegression": LinearRegression(),
     "RandomForest": RandomForestRegressor(
@@ -106,7 +112,7 @@ results = []
 
 for name, model in models.items():
     with start_run(run_name=name):
-        # Para XGB usamos arrays numpy
+        # XGBoost prefiere numpy para evitar advertencias de compatibilidad
         if name.lower().startswith("xgboost") or "xgb" in name.lower():
             X_fit, X_val_in = X_tr.to_numpy(), X_val.to_numpy()
         else:
@@ -120,14 +126,12 @@ for name, model in models.items():
         preds = model.predict(X_val_in)
         infer_time_s = time.time() - t0
 
-        # Métricas
         r2     = r2_score(y_val, preds)
         mae    = mean_absolute_error(y_val, preds)
         _rmse  = rmse(y_val, preds)
         _mape  = mape(y_val, preds)
         within = pct_within_tol(y_val, preds, TOL_EUR)
 
-        # Logueo (no-op si MLflow desactivado)
         log_params({
             "model": name,
             "target": TARGET,
@@ -175,12 +179,9 @@ summary = {
         "path": best_path
     }
 }
-
 summary_path = os.path.join(ARTIFACT_DIR, "summary.json")
 with open(summary_path, "w") as f:
     json.dump(summary, f, indent=2)
-
-# (Opcional) registrar artifacts si MLflow activo
 log_artifact(summary_path)
 
 # ===================== Print resumen =====================
