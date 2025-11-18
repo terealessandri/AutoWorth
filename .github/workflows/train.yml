@@ -6,8 +6,9 @@ on:
 jobs:
   train:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -16,14 +17,19 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install --no-cache-dir -r requirements.txt
 
       - name: Train model
+        # 🧠 Usa MLflow en modo file-store (sin servidor)
+        env:
+          MLFLOW_TRACKING_URI: file:./mlruns
         run: python train.py
 
       - name: Verify artifact contents
         run: |
+          echo "==== Contents of 05-artifacts/models/ ===="
           ls -R 05-artifacts/models || true
+          echo "==== summary.json preview ===="
           cat 05-artifacts/models/summary.json || true
 
       - name: Upload trained model
