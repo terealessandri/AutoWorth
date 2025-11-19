@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PYTHONUNBUFFERED: "1"
-      USE_MLFLOW: "0"               # tracking off en CI
+      USE_MLFLOW: "0"
       MLFLOW_TRACKING_URI: "file:./mlruns"
       MLFLOW_EXPERIMENT: "AutoWorth-Training"
     steps:
@@ -53,17 +53,15 @@ jobs:
             05-artifacts/models/summary.json
           if-no-files-found: error
 
-  # ➋ BUILD/TEST/DEPLOY: baja artifact, buildea imagen, testea y publica a GHCR
+  # ➋ BUILD/TEST/DEPLOY: descarga artifact, build, test y publica imagen a GHCR
   build_test_deploy:
     name: Build, Test, and Deploy
     runs-on: ubuntu-latest
     needs: train
     permissions:
       contents: read
-      packages: write        # necesario para push a GHCR con GITHUB_TOKEN
-    env:
-      IMAGE_SHA: ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
-      IMAGE_LATEST: ghcr.io/${{ github.repository }}:latest
+      packages: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -74,10 +72,13 @@ jobs:
           name: trained-model
           path: 05-artifacts/models
 
-      - name: Show files
+      - name: Compute image tags (force lowercase)
+        id: img
         run: |
-          ls -lah 05-artifacts/models || true
-          ls -lah
+          RAW="ghcr.io/${{ github.repository }}"
+          REPO_LC=$(echo "$RAW" | tr '[:upper:]' '[:lower:]')
+          echo "repo=$REPO_LC" >> "$GITHUB_OUTPUT"
+          echo "sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -88,17 +89,17 @@ jobs:
 
       - name: Build Docker image (bake model)
         run: |
-          docker build -t "$IMAGE_SHA" -t "$IMAGE_LATEST" .
+          docker build -t "${{ steps.img.outputs.repo }}:sha-${{ steps.img.outputs.sha }}" \
+                       -t "${{ steps.img.outputs.repo }}:latest" .
 
       - name: Smoke test container
         run: |
-          docker run -d -p 8080:8080 --name aw "$IMAGE_SHA"
-          # pequeña espera para que arranque
+          docker run -d -p 8080:8080 --name aw "${{ steps.img.outputs.repo }}:sha-${{ steps.img.outputs.sha }}"
           for i in {1..10}; do curl -sf http://localhost:8080/health && break || sleep 2; done
           docker logs aw | tail -n 100
           docker rm -f aw
 
       - name: Push images to GHCR
         run: |
-          docker push "$IMAGE_SHA"
-          docker push "$IMAGE_LATEST"
+          docker push "${{ steps.img.outputs.repo }}:sha-${{ steps.img.outputs.sha }}"
+          docker push "${{ steps.img.outputs.repo }}:latest"
