@@ -1,7 +1,7 @@
 # -------- Base image --------
 FROM python:3.12-slim
 
-# Optional: nicer logs & no .pyc files
+# Logs amigables y sin .pyc
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
@@ -11,10 +11,17 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# -------- Copy code + model artifacts --------
-# (CI workflow downloads 05-artifacts/models/ before build; locally you already have them)
-COPY . .
+# -------- Copy code --------
+# Copiamos solo lo necesario (ajusta si tu código está en otras rutas)
+COPY app.py ./app.py
+COPY 02-src ./02-src
+COPY 03-configs ./03-configs
+
+# -------- Copy trained model (artifact) --------
+# El job "Build, Test, and Deploy" descarga esto ANTES de la build
+COPY 05-artifacts/models ./05-artifacts/models
 
 # -------- Expose & run --------
-EXPOSE 8000
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Usa 8080 para calzar con el curl del workflow
+EXPOSE 8080
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
