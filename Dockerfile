@@ -15,7 +15,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copiamos solo lo necesario (ajusta si tu código está en otras rutas)
 COPY app.py ./app.py
 COPY 02-src ./02-src
-COPY 03-configs ./03-configs
 
 # -------- Copy trained model (artifact) --------
 # El job "Build, Test, and Deploy" descarga esto ANTES de la build
